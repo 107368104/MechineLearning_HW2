@@ -1,0 +1,222 @@
+# 匯入相關所需的模組
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+import pickle
+import h5py
+import glob
+import time
+from random import shuffle
+from collections import Counter
+
+from sklearn.model_selection import train_test_split
+
+import keras
+from keras.preprocessing.image import ImageDataGenerator
+from keras.callbacks import LearningRateScheduler, ModelCheckpoint
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Activation, Flatten
+from keras.layers import Conv2D, MaxPooling2D
+from keras.optimizers import SGD, Adam
+
+# 卡通角色的Label-encoding
+map_characters = {0: 'abraham_grampa_simpson', 1: 'apu_nahasapeemapetilon', 2: 'bart_simpson', 
+        3: 'charles_montgomery_burns', 4: 'chief_wiggum', 5: 'comic_book_guy', 6: 'edna_krabappel', 
+        7: 'homer_simpson', 8: 'kent_brockman', 9: 'krusty_the_clown', 10: 'lisa_simpson', 
+        11: 'marge_simpson', 12: 'milhouse_van_houten', 13: 'moe_szyslak', 
+        14: 'ned_flanders', 15: 'nelson_muntz', 16: 'principal_skinner', 17: 'sideshow_bob'}
+
+img_width = 64 
+img_height = 64
+
+
+num_classes = len(map_characters) # 要辨識的角色種類
+
+pictures_per_class = 1000 # 每個角色會有接近1000張訓練圖像
+test_size = 0.15
+
+imgsPath = "C:/Users/107368104/python-traning/HW2/train/characters-20"
+
+def load_pictures():
+    pics = []
+    labels = []
+    
+    for k, v in map_characters.items(): # k: 數字編碼 v: 角色label
+        # 把某一個角色在檔案夾裡的所有圖像檔的路徑捉出來
+        pictures = [k for k in glob.glob(imgsPath + "/" + v + "/*")]        
+        print(v + " : " + str(len(pictures))) # 看一下每個角色有多少訓練圖像
+        for i, pic in enumerate(pictures):
+            tmp_img = cv2.imread(pic)
+            
+            # 由於OpenCv讀圖像時是以BGR (Blue-Green-Red), 我們把它轉置成RGB (Red-Green-Blue)
+            tmp_img = cv2.cvtColor(tmp_img, cv2.COLOR_BGR2RGB)
+            tmp_img = cv2.resize(tmp_img, (img_height, img_width)) # 進行大小歸一位            
+            pics.append(tmp_img)
+            labels.append(k)    
+    return np.array(pics), np.array(labels)
+
+# 取得訓練資料集與驗證資料集
+def get_dataset(save=False, load=False):
+    if load: 
+        # 從檔案系統中載入之前處理保存的訓練資料集與驗證資料集
+        h5f = h5py.File('dataset.h5','r')
+        X_train = h5f['X_train'][:]
+        X_test = h5f['X_test'][:]
+        h5f.close()
+        
+        # 從檔案系統中載入之前處理保存的訓練資料標籤與驗證資料集籤
+        h5f = h5py.File('labels.h5', 'r')
+        y_train = h5f['y_train'][:]
+        y_test = h5f['y_test'][:]
+        h5f.close()
+    else:
+        # 從最原始的圖像檔案開始處理
+        X, y = load_pictures()
+        y = keras.utils.to_categorical(y, num_classes) # 目標的類別種類數
+        
+        # 將資料切分為訓練資料集與驗證資料集 (85% vs. 15%)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size) 
+        if save: # 保存尚未進行歸一化的圖像數據
+            h5f = h5py.File('dataset.h5', 'w')
+            h5f.create_dataset('X_train', data=X_train)
+            h5f.create_dataset('X_test', data=X_test)
+            h5f.close()
+            
+            h5f = h5py.File('labels.h5', 'w')
+            h5f.create_dataset('y_train', data=y_train)
+            h5f.create_dataset('y_test', data=y_test)
+            h5f.close()
+    
+    # 進行圖像每個像素值的型別轉換與歸一化處理
+    X_train = X_train.astype('float32') / 255.
+    X_test = X_test.astype('float32') / 255.
+    print("Train", X_train.shape, y_train.shape)
+    print("Test", X_test.shape, y_test.shape)
+    
+    return X_train, X_test, y_train, y_test   
+
+
+ #取得訓練資料集與驗證資料集  
+X_train, X_test, y_train, y_test = get_dataset(save=True, load=False)
+
+def create_model_six_conv(input_shape):
+    model = Sequential()
+    model.add(Conv2D(32, (3, 3), padding='same', activation='relu', input_shape=input_shape))
+    model.add(Conv2D(32, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Dropout(0.2))
+    
+    model.add(Conv2D(64, (3, 3), padding='same', activation='relu'))
+    model.add(Conv2D(64, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Dropout(0.2))
+    
+    model.add(Conv2D(128, (3, 3), padding='same', activation='relu'))
+    model.add(Conv2D(128, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Dropout(0.2))
+    
+    model.add(Flatten())
+    model.add(Dense(1024, activation='relu'))
+    model.add(Dropout(0.5))
+    
+    model.add(Dense(num_classes, activation='softmax'))
+    
+    return model;
+
+#圖像的shape是 (42,42,3)
+model = create_model_six_conv((img_height, img_width, 3)) # 初始化一個模型
+model.summary() # 秀出模型架構
+
+# 讓我們先配置一個常用的組合來作為後續優化的基準點
+lr = 0.01
+sgd = SGD(lr=lr, decay=1e-6, momentum=0.9, nesterov=True)
+model.compile(loss='categorical_crossentropy',
+             optimizer=sgd,
+             metrics=['accuracy'])
+             
+def lr_schedule(epoch):
+    return lr*(0.1**int(epoch/10))
+
+batch_size = 32
+epochs = 10
+
+history = model.fit(X_train, y_train,
+         batch_size=batch_size,
+         epochs=epochs,
+         validation_data=(X_test, y_test),
+         shuffle=True,
+         callbacks=[LearningRateScheduler(lr_schedule),
+             ModelCheckpoint('model.h5', save_best_only=True)
+         ])             
+
+import os
+from pathlib import PurePath # 處理不同作業系統file path的解析問題 (*nix vs windows)
+
+# 載入要驗證模型的數據
+def load_test_set(path):
+    pics, labels = [], []
+    reverse_dict = {v:k for k,v in map_characters.items()}
+    for pic in glob.glob(path+'*.*'):
+        char_name = "_".join(os.path.basename(pic).split('_')[:-1])
+        if char_name in reverse_dict:
+            temp = cv2.imread(pic)
+            temp = cv2.cvtColor(temp, cv2.COLOR_BGR2RGB)
+            temp = cv2.resize(temp, (img_height,img_width)).astype('float32') / 255.
+            pics.append(temp)
+            labels.append(reverse_dict[char_name])
+    X_test = np.array(pics)
+    y_test = np.array(labels)
+    y_test = keras.utils.to_categorical(y_test, num_classes) # 進行one-hot編碼
+    print("Test set", X_test.shape, y_test.shape)
+    return X_test, y_test
+
+imgsPath = "C:/Users/107368104/python-traning/HW2/test/test"
+
+#載入數據
+X_valtest, y_valtest = load_test_set(imgsPath)
+
+# 預測與比對
+from keras.models import load_model
+
+# 把訓練時val_loss最小的模型載入
+model = load_model('model.h5')
+
+# 預測與比對
+y_pred = model.predict_classes(X_valtest)
+acc = np.sum(y_pred==np.argmax(y_valtest, axis=1))/np.size(y_pred)
+print("Test accuracy = {}".format(acc))
+
+import cv2
+import numpy as np
+from keras.models import load_model
+import pandas as pd
+
+def read_images(path):
+    images=[]
+    for i in range(990):
+        image=cv2.resize(cv2.imread(path+str(i+1)+'.jpg'),(64,64))
+        images.append(image)
+
+    images=np.array(images,dtype=np.float32)/255
+    return images
+
+def transform(listdir,label,lenSIZE):
+    label_str=[]
+    for i in range (lenSIZE):
+        temp=listdir[label[i]]
+        label_str.append(temp)
+
+    return label_str
+    
+    images = read_images('C:/Users/107368104/python-traning/HW2/test/test/')
+model = load_model('C:/Users/User/model.h5')
+
+predict = model.predict_classes(images, verbose=1)
+print(predict)
+label_str=transform(np.loadtxt('name.txt',dtype='str'),predict,images.shape[0])
+
+df = pd.DataFrame({"character": label_str})
+df.index = np.arange(1, len(df) + 1)
+df.index.names = ['id']
+df.to_csv('test.csv')
